@@ -6,6 +6,8 @@ export namespace main {
 	    content: string;
 	    raw_html: string;
 	    full_page_html: string;
+	    retry_count: number;
+	    failed: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChapterInfo(source);
@@ -18,6 +20,8 @@ export namespace main {
 	        this.content = source["content"];
 	        this.raw_html = source["raw_html"];
 	        this.full_page_html = source["full_page_html"];
+	        this.retry_count = source["retry_count"];
+	        this.failed = source["failed"];
 	    }
 	}
 	export class ScrapeResult {
