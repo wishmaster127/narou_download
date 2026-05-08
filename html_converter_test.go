@@ -65,6 +65,16 @@ func TestHTMLConverter_RubyToAozora(t *testing.T) {
 			expected: "｜漢字《かんじ》と｜仮名《かな》",
 		},
 		{
+			name:     "rubyタグで表現された傍点",
+			input:    "<ruby>重要<rt>・・</rt></ruby>",
+			expected: "［＃傍点］重要［＃傍点終わり］",
+		},
+		{
+			name:     "数値文字参照の傍点ruby",
+			input:    "<ruby>重要<rt>&#x30FB;&#x30FB;</rt></ruby>",
+			expected: "［＃傍点］重要［＃傍点終わり］",
+		},
+		{
 			name:     "《》の変換確認",
 			input:    "これは《テスト》です",
 			expected: "これは≪テスト≫です",
@@ -161,10 +171,10 @@ func TestHTMLConverter_SToAozora(t *testing.T) {
 
 func TestHTMLConverter_ImgToAozora(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		currentURL  string
-		expected    string
+		name       string
+		input      string
+		currentURL string
+		expected   string
 	}{
 		{
 			name:       "基本的な画像変換",
@@ -329,7 +339,7 @@ func TestHTMLConverter_ToAozora(t *testing.T) {
 			preHTML: false,
 		},
 		{
-			name: "装飾タグ削除モード",
+			name:  "装飾タグ削除モード",
 			input: `<p><b>太字</b>と<i>斜体</i></p>`,
 			expected: `太字と斜体
 `,

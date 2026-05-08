@@ -5,14 +5,15 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // HTMLConverter は HTML を青空文庫形式に変換するための構造体
 type HTMLConverter struct {
-	text                string
-	stripDecorationTag  bool
-	illustCurrentURL    string
-	illustGrepPattern   *regexp.Regexp
+	text               string
+	stripDecorationTag bool
+	illustCurrentURL   string
+	illustGrepPattern  *regexp.Regexp
 }
 
 // NewHTMLConverter は新しい HTMLConverter インスタンスを作成
@@ -84,7 +85,7 @@ func (h *HTMLConverter) brToAozora(text string) string {
 	// 既存の改行文字を削除
 	re1 := regexp.MustCompile(`[\r\n]+`)
 	text = re1.ReplaceAllString(text, "")
-	
+
 	// <br> タグを改行に変換
 	re2 := regexp.MustCompile(`<br.*?>`)
 	return re2.ReplaceAllString(text, "\n")
@@ -107,11 +108,11 @@ func (h *HTMLConverter) rubyToAozora(text string) string {
 	return re.ReplaceAllStringFunc(text, func(match string) string {
 		// ruby タグの内容を取得
 		rubyContent := re.FindStringSubmatch(match)[1]
-		
+
 		// <rt> で分割
 		rtRe := regexp.MustCompile(`(?i)<rt>`)
 		parts := rtRe.Split(rubyContent, 2)
-		
+
 		if len(parts) < 2 {
 			// rt タグがない場合はタグを削除して返す
 			return h.deleteTag(parts[0])
@@ -126,15 +127,58 @@ func (h *HTMLConverter) rubyToAozora(text string) string {
 		textParts := rpRe.Split(parts[1], 2)
 		rubyText := h.deleteTag(textParts[0])
 
+		if h.isEmphasisDotRuby(rubyBase, rubyText) {
+			return fmt.Sprintf("［＃傍点］%s［＃傍点終わり］", rubyBase)
+		}
+
 		return fmt.Sprintf("｜%s《%s》", rubyBase, rubyText)
 	})
+}
+
+func (h *HTMLConverter) isEmphasisDotRuby(rubyBase, rubyText string) bool {
+	baseRunes := countNonSpaceRunes(restoreHTMLEntity(rubyBase))
+	if baseRunes == 0 {
+		return false
+	}
+
+	dotRunes := 0
+	for _, r := range strings.TrimSpace(restoreHTMLEntity(rubyText)) {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		if !isSesameDotRune(r) {
+			return false
+		}
+		dotRunes++
+	}
+
+	return dotRunes == baseRunes
+}
+
+func countNonSpaceRunes(text string) int {
+	count := 0
+	for _, r := range text {
+		if !unicode.IsSpace(r) {
+			count++
+		}
+	}
+	return count
+}
+
+func isSesameDotRune(r rune) bool {
+	switch r {
+	case '・', '･', '﹅', '﹆', '•', '●':
+		return true
+	default:
+		return false
+	}
 }
 
 // bToAozora は <b> タグを青空文庫形式に変換
 func (h *HTMLConverter) bToAozora(text string) string {
 	re1 := regexp.MustCompile(`(?i)<b>`)
 	text = re1.ReplaceAllString(text, "［＃太字］")
-	
+
 	re2 := regexp.MustCompile(`(?i)</b>`)
 	return re2.ReplaceAllString(text, "［＃太字終わり］")
 }
@@ -143,7 +187,7 @@ func (h *HTMLConverter) bToAozora(text string) string {
 func (h *HTMLConverter) iToAozora(text string) string {
 	re1 := regexp.MustCompile(`(?i)<i>`)
 	text = re1.ReplaceAllString(text, "［＃斜体］")
-	
+
 	re2 := regexp.MustCompile(`(?i)</i>`)
 	return re2.ReplaceAllString(text, "［＃斜体終わり］")
 }
@@ -152,7 +196,7 @@ func (h *HTMLConverter) iToAozora(text string) string {
 func (h *HTMLConverter) sToAozora(text string) string {
 	re1 := regexp.MustCompile(`(?i)<s>`)
 	text = re1.ReplaceAllString(text, "［＃取消線］")
-	
+
 	re2 := regexp.MustCompile(`(?i)</s>`)
 	return re2.ReplaceAllString(text, "［＃取消線終わり］")
 }
@@ -169,9 +213,9 @@ func (h *HTMLConverter) imgToAozora(text string) string {
 		if len(matches) < 2 {
 			return match
 		}
-		
+
 		src := matches[1]
-		
+
 		// 相対URLの場合は絶対URLに変換
 		if h.illustCurrentURL != "" {
 			if baseURL, err := url.Parse(h.illustCurrentURL); err == nil {
@@ -180,7 +224,7 @@ func (h *HTMLConverter) imgToAozora(text string) string {
 				}
 			}
 		}
-		
+
 		return fmt.Sprintf("［＃挿絵（%s）入る］", src)
 	})
 }
@@ -229,12 +273,12 @@ func restoreHTMLEntity(text string) string {
 		if len(matches) < 2 {
 			return match
 		}
-		
+
 		var code int
 		if _, err := fmt.Sscanf(matches[1], "%d", &code); err != nil {
 			return match
 		}
-		
+
 		return string(rune(code))
 	})
 
@@ -245,12 +289,12 @@ func restoreHTMLEntity(text string) string {
 		if len(matches) < 2 {
 			return match
 		}
-		
+
 		var code int
 		if _, err := fmt.Sscanf(matches[1], "%x", &code); err != nil {
 			return match
 		}
-		
+
 		return string(rune(code))
 	})
 
