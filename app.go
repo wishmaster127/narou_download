@@ -32,9 +32,17 @@ type Settings struct {
 	LineEnding     string `json:"lineEnding"`
 	CreateHtml     bool   `json:"createHtml"`
 	CreateTxt      bool   `json:"createTxt"`
+	CreateReadable bool   `json:"createReadable"`
 	CreateCombined bool   `json:"createCombined"`
 	ShowInFront    bool   `json:"showInFront"`
 }
+
+type textFormat string
+
+const (
+	textFormatAozora   textFormat = "aozora"
+	textFormatReadable textFormat = "readable"
+)
 
 // NewApp creates a new App application struct
 func NewApp() *App {
@@ -100,23 +108,38 @@ func (a *App) DownloadNovel(url string, savePath string, options map[string]inte
 	// 設定の取得
 	encoding := options["encoding"].(string)
 	lineEnding := options["lineEnding"].(string)
-	createHtml := options["createHtml"].(bool)
-	createTxt := options["createTxt"].(bool)
-	createCombined := options["createCombined"].(bool)
+	createHtml := boolOption(options, "createHtml", false)
+	createTxt := boolOption(options, "createTxt", true)
+	createReadable := boolOption(options, "createReadable", false)
+	createCombined := boolOption(options, "createCombined", false)
 
 	// 連載か短編かで処理を分岐
 	switch result.PageType {
 	case "rensai":
-		return a.downloadRensai(savePath, result, createHtml, createTxt, encoding, lineEnding, createCombined)
+		return a.downloadRensai(savePath, result, createHtml, createTxt, createReadable, encoding, lineEnding, createCombined)
 	case "short":
-		return a.downloadShort(savePath, result, createHtml, createTxt, encoding, lineEnding, url)
+		return a.downloadShort(savePath, result, createHtml, createTxt, createReadable, encoding, lineEnding, url)
 	default:
 		return fmt.Errorf("不明なページタイプ: %s", result.PageType)
 	}
 }
 
+func boolOption(options map[string]interface{}, key string, defaultValue bool) bool {
+	value, ok := options[key]
+	if !ok {
+		return defaultValue
+	}
+
+	boolValue, ok := value.(bool)
+	if !ok {
+		return defaultValue
+	}
+
+	return boolValue
+}
+
 // downloadRensai は連載小説のダウンロード処理を行います（リトライ機能付き）
-func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, createTxt bool, encoding, lineEnding string, createCombined bool) error {
+func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, createTxt, createReadable bool, encoding, lineEnding string, createCombined bool) error {
 	if len(result.Chapters) == 0 {
 		return fmt.Errorf("エピソードが見つかりませんでした")
 	}
@@ -136,6 +159,7 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 
 	// エピソード別コンテンツの取得
 	var allChapterContents []string
+	var allReadableChapterContents []string
 	novelCode := extractNovelCodeFromURL(result.Chapters[0].URL) // 最初のエピソードURLから小説番号を取得
 	var failedChapters int
 	const maxFailures = 3
@@ -153,7 +177,7 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		chapterFileName := generateFileName(novelCode, episodeNumber)
 
 		// 既に保存済みかチェック
-		if a.shouldSkipEpisode(savePath, chapterFileName, episodeNumber, createHtml, createTxt) {
+		if a.shouldSkipEpisode(savePath, chapterFileName, episodeNumber, createHtml, createTxt, createReadable) {
 			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話: %s はすでに保存済みです。スキップします。", i+1, chapter.Title))
 			continue
 		}
@@ -181,8 +205,14 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		result.Chapters[i].FullPageHTML = fullPageHTML
 
 		// 連結ファイル用に各話のフォーマットされたコンテンツを保存（タイトル・作者名なし）
-		chapterContentForCombined := a.formatChapterContentForCombined(chapter.Title, content)
-		allChapterContents = append(allChapterContents, chapterContentForCombined)
+		if createTxt {
+			chapterContentForCombined := a.formatChapterContentForCombined(chapter.Title, content, textFormatAozora)
+			allChapterContents = append(allChapterContents, chapterContentForCombined)
+		}
+		if createReadable {
+			readableChapterContentForCombined := a.formatChapterContentForCombined(chapter.Title, content, textFormatReadable)
+			allReadableChapterContents = append(allReadableChapterContents, readableChapterContentForCombined)
+		}
 
 		// 連載の場合、次のエピソードまで10秒間隔を開ける（最後のエピソード以外）
 		if i < len(result.Chapters)-1 {
@@ -193,9 +223,15 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		// ファイル保存（リトライ機能付き）
 		if createTxt {
 			// 各話のフォーマット（タイトル、作者名、話タイトル、本文）
-			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content)
+			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatAozora)
 			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding); err != nil {
 				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の保存に失敗しました: %v", i+1, err))
+			}
+		}
+		if createReadable {
+			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatReadable)
+			if err := a.saveTextFileWithRetry(savePath, chapterFileName+"-readable", formattedContent, encoding, lineEnding); err != nil {
+				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の読書用TXT保存に失敗しました: %v", i+1, err))
 			}
 		}
 
@@ -229,9 +265,9 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 
 		// 冒頭に小説タイトルと作者名を追加（ルビ変換済み）
 		var combinedBuilder strings.Builder
-		combinedBuilder.WriteString(a.convertRubyToAozora(result.Title))
+		combinedBuilder.WriteString(a.formatInlineText(result.Title, textFormatAozora))
 		combinedBuilder.WriteString("\n")
-		combinedBuilder.WriteString(a.convertRubyToAozora(result.Author))
+		combinedBuilder.WriteString(a.formatInlineText(result.Author, textFormatAozora))
 		combinedBuilder.WriteString("\n\n\n")
 
 		// 各話を点線区切りで連結
@@ -245,6 +281,22 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 			}
 		}
 	}
+	if createCombined && len(allReadableChapterContents) > 0 {
+		runtime.EventsEmit(a.ctx, "progress", 90)
+		runtime.EventsEmit(a.ctx, "progressText", "読書用連結ファイル作成中")
+		runtime.EventsEmit(a.ctx, "log", "読書用連結ファイルを作成中...")
+
+		var combinedBuilder strings.Builder
+		combinedBuilder.WriteString(a.formatInlineText(result.Title, textFormatReadable))
+		combinedBuilder.WriteString("\n")
+		combinedBuilder.WriteString(a.formatInlineText(result.Author, textFormatReadable))
+		combinedBuilder.WriteString("\n\n\n")
+		combinedBuilder.WriteString(strings.Join(allReadableChapterContents, "\n\n----------------\n\n\n"))
+
+		if err := a.saveTextFileWithRetry(savePath, "all-readable", combinedBuilder.String(), encoding, lineEnding); err != nil {
+			return fmt.Errorf("読書用連結TXTファイルの保存に失敗しました: %w", err)
+		}
+	}
 
 	// 進捗状況を更新
 	runtime.EventsEmit(a.ctx, "progress", 100)
@@ -255,7 +307,7 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 }
 
 // downloadShort は短編小説のダウンロード処理を行います
-func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, createTxt bool, encoding, lineEnding string, originalURL string) error {
+func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, createTxt, createReadable bool, encoding, lineEnding string, originalURL string) error {
 	runtime.EventsEmit(a.ctx, "progressText", "短編小説処理中")
 
 	// 短編小説のファイル名生成（元のURLから小説番号を取得）
@@ -263,7 +315,7 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 	fileName := generateFileName(novelCode, "1") // 短編は常にエピソード1
 
 	// 既に保存済みかチェック
-	if a.shouldSkipEpisode(savePath, fileName, "1", createHtml, createTxt) {
+	if a.shouldSkipEpisode(savePath, fileName, "1", createHtml, createTxt, createReadable) {
 		runtime.EventsEmit(a.ctx, "log", "短編小説はすでに保存済みです。スキップします。")
 		runtime.EventsEmit(a.ctx, "progress", 100)
 		runtime.EventsEmit(a.ctx, "progressText", "完了（スキップ）")
@@ -298,8 +350,20 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 		}
 
 		// 短編小説のフォーマット（タイトル、作者名、話タイトルなし、本文）
-		formattedContent := a.formatChapterContent(result.Title, result.Author, "", content)
+		formattedContent := a.formatChapterContent(result.Title, result.Author, "", content, textFormatAozora)
 		if err := a.saveTextFileWithRetry(savePath, fileName, formattedContent, encoding, lineEnding); err != nil {
+			return err
+		}
+	}
+	if createReadable {
+		content := strings.Join(result.TextContent, "\n")
+		if content == "" {
+			runtime.EventsEmit(a.ctx, "log", "本文を取得できませんでした")
+			return fmt.Errorf("本文を取得できませんでした")
+		}
+
+		formattedContent := a.formatChapterContent(result.Title, result.Author, "", content, textFormatReadable)
+		if err := a.saveTextFileWithRetry(savePath, fileName+"-readable", formattedContent, encoding, lineEnding); err != nil {
 			return err
 		}
 	}
@@ -474,10 +538,11 @@ func (a *App) LoadSettings() (Settings, error) {
 		if os.IsNotExist(err) {
 			// 設定ファイルが存在しない場合はデフォルト値を返す
 			return Settings{
-				Encoding:   "UTF-8",
-				LineEnding: "CR+LF",
-				CreateHtml: true,
-				CreateTxt:  true,
+				Encoding:       "UTF-8",
+				LineEnding:     "CR+LF",
+				CreateHtml:     false,
+				CreateTxt:      true,
+				CreateReadable: false,
 			}, nil
 		}
 		return settings, fmt.Errorf("設定の読み込みに失敗しました: %w", err)
@@ -593,8 +658,8 @@ func generateFileName(novelCode, episodeNumber string) string {
 }
 
 // isFileAlreadySaved は指定されたファイルが既に保存されているかチェックします
-func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, createHtml, createTxt bool) (bool, bool) {
-	var htmlExists, txtExists bool
+func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, createHtml, createTxt, createReadable bool) (bool, bool, bool) {
+	var htmlExists, txtExists, readableExists bool
 
 	// HTMLファイルの存在チェック（エピソード番号のみをファイル名に使用）
 	if createHtml {
@@ -616,15 +681,24 @@ func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, creat
 		txtExists = true // TXTを作成しない場合は常にtrue
 	}
 
-	return htmlExists, txtExists
+	if createReadable {
+		readablePath := filepath.Join(savePath, fileName+"-readable.txt")
+		if _, err := os.Stat(readablePath); err == nil {
+			readableExists = true
+		}
+	} else {
+		readableExists = true // 読書用TXTを作成しない場合は常にtrue
+	}
+
+	return htmlExists, txtExists, readableExists
 }
 
 // shouldSkipEpisode はエピソードをスキップするかどうかを判定します
-func (a *App) shouldSkipEpisode(savePath, fileName, episodeNumber string, createHtml, createTxt bool) bool {
-	htmlExists, txtExists := a.isFileAlreadySaved(savePath, fileName, episodeNumber, createHtml, createTxt)
+func (a *App) shouldSkipEpisode(savePath, fileName, episodeNumber string, createHtml, createTxt, createReadable bool) bool {
+	htmlExists, txtExists, readableExists := a.isFileAlreadySaved(savePath, fileName, episodeNumber, createHtml, createTxt, createReadable)
 
 	// 必要なファイルがすべて存在する場合はスキップ
-	return htmlExists && txtExists
+	return htmlExists && txtExists && readableExists
 }
 
 // GetTitle は小説のタイトルを取得します（フロントエンド用）
@@ -698,21 +772,20 @@ func (a *App) generateEpisodeHTML(episodeTitle, content, novelTitle string, epis
 }
 
 // formatChapterContent は各話のテキストコンテンツをフォーマットします
-func (a *App) formatChapterContent(novelTitle, author, chapterTitle, content string) string {
+func (a *App) formatChapterContent(novelTitle, author, chapterTitle, content string, format textFormat) string {
 	var formatted strings.Builder
 
-	// ルビを青空文庫形式に変換
-	content = a.convertRubyToAozora(content)
+	content = a.formatInlineText(content, format)
 
 	// 各話のタイトル（短編の場合でもタイトルを表示）
 	if chapterTitle != "" {
 		// タイトルのルビも変換
-		convertedTitle := a.convertRubyToAozora(chapterTitle)
+		convertedTitle := a.formatInlineText(chapterTitle, format)
 		formatted.WriteString(convertedTitle)
 		formatted.WriteString("\n\n")
 	} else {
 		// 短編の場合は小説タイトルを使用
-		convertedNovelTitle := a.convertRubyToAozora(novelTitle)
+		convertedNovelTitle := a.formatInlineText(novelTitle, format)
 		formatted.WriteString(convertedNovelTitle)
 		formatted.WriteString("\n\n")
 	}
@@ -727,6 +800,14 @@ func (a *App) formatChapterContent(novelTitle, author, chapterTitle, content str
 	}
 
 	return formatted.String()
+}
+
+func (a *App) formatInlineText(content string, format textFormat) string {
+	content = a.convertRubyToAozora(content)
+	if format == textFormatReadable {
+		return a.convertAozoraToReadableText(content)
+	}
+	return content
 }
 
 // convertRubyToAozora はHTMLのrubyタグを青空文庫形式に変換します
@@ -758,6 +839,13 @@ func (a *App) convertRubyToAozora(content string) string {
 
 // formatAozoraRuby は青空文庫形式のルビを正しくフォーマットします
 func (a *App) formatAozoraRuby(baseText, ruby, originalMatch string) string {
+	baseText = restoreHTMLEntity(a.removeHTMLTags(baseText))
+	ruby = restoreHTMLEntity(a.removeHTMLTags(ruby))
+
+	if isEmphasisDotRuby(baseText, ruby) {
+		return "［＃傍点］" + baseText + "［＃傍点終わり］"
+	}
+
 	// ルビのかかる文字列が漢字のみか確認
 	isKanjiOnly := regexp.MustCompile(`^[\p{Han}々仝〆〇ヶ]+$`).MatchString(baseText)
 
@@ -770,15 +858,30 @@ func (a *App) formatAozoraRuby(baseText, ruby, originalMatch string) string {
 	}
 }
 
+func (a *App) convertAozoraToReadableText(content string) string {
+	sesamePattern := regexp.MustCompile(`(?s)［＃傍点］(.*?)［＃傍点終わり］`)
+	content = sesamePattern.ReplaceAllString(content, "$1")
+
+	markedRubyPattern := regexp.MustCompile(`｜([^《\n]+?)《([^》\n]+?)》`)
+	content = markedRubyPattern.ReplaceAllString(content, "$1（$2）")
+
+	kanjiRubyPattern := regexp.MustCompile(`([\p{Han}々仝〆〇ヶ]+)《([^》\n]+?)》`)
+	content = kanjiRubyPattern.ReplaceAllString(content, "$1（$2）")
+
+	annotationPattern := regexp.MustCompile(`［＃[^］]+］`)
+	content = annotationPattern.ReplaceAllString(content, "")
+
+	return content
+}
+
 // formatChapterContentForCombined は連結ファイル用に各話のテキストコンテンツをフォーマットします（タイトル・作者名なし）
-func (a *App) formatChapterContentForCombined(chapterTitle, content string) string {
+func (a *App) formatChapterContentForCombined(chapterTitle, content string, format textFormat) string {
 	var formatted strings.Builder
 
-	// ルビを青空文庫形式に変換
-	content = a.convertRubyToAozora(content)
+	content = a.formatInlineText(content, format)
 
 	// 各話のタイトル（ルビ変換済み）
-	convertedTitle := a.convertRubyToAozora(chapterTitle)
+	convertedTitle := a.formatInlineText(chapterTitle, format)
 	formatted.WriteString(convertedTitle)
 	formatted.WriteString("\n\n")
 

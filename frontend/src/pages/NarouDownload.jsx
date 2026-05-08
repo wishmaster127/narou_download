@@ -32,8 +32,9 @@ export default function NarouDownload() {
   const [savePath, setSavePath] = useState('')
   const [url, setUrl] = useState('')
   const [showInFront, setShowInFront] = useState(false)
-  const [createHtml, setCreateHtml] = useState(true)
+  const [createHtml, setCreateHtml] = useState(false)
   const [createTxt, setCreateTxt] = useState(true)
+  const [createReadable, setCreateReadable] = useState(false)
   const [createCombined, setCreateCombined] = useState(false)
   const [title, setTitle] = useState('')
   const [progressText, setProgressText] = useState('')
@@ -48,8 +49,9 @@ export default function NarouDownload() {
         setSavePath(settings.savePath || '')
         setEncoding(settings.encoding || 'UTF-8')
         setLineEnding(settings.lineEnding || 'CR+LF')
-        setCreateHtml(settings.createHtml ?? true)
+        setCreateHtml(false)
         setCreateTxt(settings.createTxt ?? true)
+        setCreateReadable(settings.createReadable ?? false)
         setCreateCombined(settings.createCombined ?? false)
         setShowInFront(settings.showInFront ?? false)
       } catch (error) {
@@ -91,8 +93,8 @@ export default function NarouDownload() {
       return
     }
     
-    if (!createHtml && !createTxt) {
-      setLog('エラー: HTMLまたはTXTのどちらかを選択してください')
+    if (!createHtml && !createTxt && !createReadable) {
+      setLog('エラー: 保存する形式を少なくとも1つ選択してください')
       return
     }
 
@@ -114,8 +116,9 @@ export default function NarouDownload() {
       const options = {
         encoding,
         lineEnding,
-        createHtml,
+        createHtml: false,
         createTxt,
+        createReadable,
         createCombined,
         showInFront
       }
@@ -190,8 +193,9 @@ export default function NarouDownload() {
           savePath,
           encoding,
           lineEnding,
-          createHtml,
+          createHtml: false,
           createTxt,
+          createReadable,
           createCombined,
           showInFront
         }
@@ -202,7 +206,7 @@ export default function NarouDownload() {
     }
   
     syncSettings()
-  }, [url, savePath, encoding, lineEnding, createHtml, createTxt, createCombined, showInFront])
+  }, [url, savePath, encoding, lineEnding, createHtml, createTxt, createReadable, createCombined, showInFront])
 
   // ログが更新されたときに自動スクロール
   useEffect(() => {
@@ -278,10 +282,15 @@ export default function NarouDownload() {
                 onChange={(event) => setCreateHtml(event.currentTarget.checked)}
                 label="HTML" 
               /> */}
-              <Checkbox 
+              <Checkbox
                 checked={createTxt}
                 onChange={(event) => setCreateTxt(event.currentTarget.checked)}
-                label="TXT" 
+                label="青空文庫TXT"
+              />
+              <Checkbox
+                checked={createReadable}
+                onChange={(event) => setCreateReadable(event.currentTarget.checked)}
+                label="読書用TXT"
               />
               <Select
                 value={encoding}

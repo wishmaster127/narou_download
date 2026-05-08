@@ -127,7 +127,7 @@ func (h *HTMLConverter) rubyToAozora(text string) string {
 		textParts := rpRe.Split(parts[1], 2)
 		rubyText := h.deleteTag(textParts[0])
 
-		if h.isEmphasisDotRuby(rubyBase, rubyText) {
+		if isEmphasisDotRuby(rubyBase, rubyText) {
 			return fmt.Sprintf("［＃傍点］%s［＃傍点終わり］", rubyBase)
 		}
 
@@ -135,7 +135,7 @@ func (h *HTMLConverter) rubyToAozora(text string) string {
 	})
 }
 
-func (h *HTMLConverter) isEmphasisDotRuby(rubyBase, rubyText string) bool {
+func isEmphasisDotRuby(rubyBase, rubyText string) bool {
 	baseRunes := countNonSpaceRunes(restoreHTMLEntity(rubyBase))
 	if baseRunes == 0 {
 		return false

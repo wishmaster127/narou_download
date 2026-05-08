@@ -77,6 +77,7 @@ export namespace main {
 	    lineEnding: string;
 	    createHtml: boolean;
 	    createTxt: boolean;
+	    createReadable: boolean;
 	    createCombined: boolean;
 	    showInFront: boolean;
 	
@@ -92,10 +93,10 @@ export namespace main {
 	        this.lineEnding = source["lineEnding"];
 	        this.createHtml = source["createHtml"];
 	        this.createTxt = source["createTxt"];
+	        this.createReadable = source["createReadable"];
 	        this.createCombined = source["createCombined"];
 	        this.showInFront = source["showInFront"];
 	    }
 	}
 
 }
-
