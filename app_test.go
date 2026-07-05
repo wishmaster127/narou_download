@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestApp_FormatAozoraRuby_EmphasisDot(t *testing.T) {
 	app := NewApp()
@@ -31,5 +34,17 @@ func TestApp_ConvertAozoraToReadableText(t *testing.T) {
 	expected := "abc（えーびーしー）と漢字（かんじ）と重要強調"
 	if result != expected {
 		t.Fatalf("convertAozoraToReadableText() = %q, want %q", result, expected)
+	}
+}
+
+func TestSanitizePathName_TrailingSpace(t *testing.T) {
+	title := "【旧】ランブルビースト ～性獣が強くて人類滅亡の危機なのでビッチがセックスで世界奪還目指します～ "
+	got := sanitizePathName(title)
+	want := "【旧】ランブルビースト ～性獣が強くて人類滅亡の危機なのでビッチがセックスで世界奪還目指します～"
+	if got != want {
+		t.Fatalf("sanitizePathName() = %q, want %q", got, want)
+	}
+	if strings.HasSuffix(got, " ") {
+		t.Fatalf("sanitizePathName() must not end with space, got %q", got)
 	}
 }

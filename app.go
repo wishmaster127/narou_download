@@ -66,8 +66,9 @@ func (a *App) setupSavePath(savePath string, title string) (string, error) {
 		}
 		exeDir := filepath.Dir(exePath)
 
-		// 小説のタイトルと同じ名前のディレクトリを作成
-		savePath = filepath.Join(exeDir, title)
+		// 小説のタイトルと同じ名前のディレクトリを作成（パス用に正規化）
+		dirName := sanitizePathName(title)
+		savePath = filepath.Join(exeDir, dirName)
 	}
 
 	// ディレクトリを作成
@@ -583,6 +584,17 @@ func sanitizeFileName(fileName string) string {
 	}
 
 	return fileName
+}
+
+// sanitizePathName はフォルダ名として安全な文字列に正規化します。
+// Windows では末尾の空白・ピリオドはファイルシステム上無視されるため、事前に除去します。
+func sanitizePathName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimRight(name, ".")
+	if name == "" {
+		return "untitled"
+	}
+	return sanitizeFileName(name)
 }
 
 // extractNovelCodeFromURL はURLから小説番号を抽出します
