@@ -66,13 +66,20 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
+// emitEvent はデスクトップ起動時に画面へ進捗を通知します。
+func (a *App) emitEvent(name string, data ...interface{}) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, name, data...)
+	}
+}
+
 // setupSavePath は保存先のパスを設定します
 func (a *App) setupSavePath(savePath string, title string) (string, error) {
 	if savePath == "" {
 		// 実行ファイルのディレクトリを取得
 		exePath, err := os.Executable()
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("実行ファイルのパスを取得できませんでした: %v", err))
+			a.emitEvent("log", fmt.Sprintf("実行ファイルのパスを取得できませんでした: %v", err))
 			return "", fmt.Errorf("実行ファイルのパスを取得できませんでした: %w", err)
 		}
 		exeDir := filepath.Dir(exePath)
@@ -84,30 +91,47 @@ func (a *App) setupSavePath(savePath string, title string) (string, error) {
 
 	// ディレクトリを作成
 	if err := os.MkdirAll(savePath, 0755); err != nil {
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("保存先ディレクトリの作成に失敗しました: %v", err))
+		a.emitEvent("log", fmt.Sprintf("保存先ディレクトリの作成に失敗しました: %v", err))
 		return "", fmt.Errorf("保存先ディレクトリの作成に失敗しました: %w", err)
 	}
-	runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("保存先ディレクトリを作成しました: %s", savePath))
+	a.emitEvent("log", fmt.Sprintf("保存先ディレクトリを作成しました: %s", savePath))
 
 	return savePath, nil
 }
 
 // DownloadNovel は小説のダウンロードを開始します
 func (a *App) DownloadNovel(url string, savePath string, options map[string]interface{}) error {
+	defaults := defaultSettings()
+	encoding, ok := options["encoding"].(string)
+	if !ok || encoding == "" {
+		encoding = defaults.Encoding
+	}
+	lineEnding, ok := options["lineEnding"].(string)
+	if !ok || lineEnding == "" {
+		lineEnding = defaults.LineEnding
+	}
+	createHtml := boolOption(options, "createHtml", false)
+	createTxt := boolOption(options, "createTxt", defaults.CreateTxt)
+	createReadable := boolOption(options, "createReadable", defaults.CreateReadable)
+	createCombined := boolOption(options, "createCombined", false)
+	if !createHtml && !createTxt && !createReadable {
+		return fmt.Errorf("保存する形式を少なくとも1つ選択してください")
+	}
+
 	// 進捗状況を更新
-	runtime.EventsEmit(a.ctx, "progress", 0)
-	runtime.EventsEmit(a.ctx, "log", "HTMLの取得を開始します...")
+	a.emitEvent("progress", 0)
+	a.emitEvent("log", "HTMLの取得を開始します...")
 
 	// 各話URLの場合は小説インデックスURLに変換
 	processedURL := a.convertToIndexURL(url)
 	if processedURL != url {
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("各話URLを検出しました。小説全体をダウンロードします: %s", processedURL))
+		a.emitEvent("log", fmt.Sprintf("各話URLを検出しました。小説全体をダウンロードします: %s", processedURL))
 	}
 
 	// スクレイピングの実行
-	result := a.StartScraping(processedURL)
+	result := a.startScraping(processedURL, createTxt || createReadable, createHtml)
 	if result.Error != "" {
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("スクレイピングエラー: %s", result.Error))
+		a.emitEvent("log", fmt.Sprintf("スクレイピングエラー: %s", result.Error))
 		return fmt.Errorf("スクレイピングエラー: %s", result.Error)
 	}
 
@@ -116,15 +140,6 @@ func (a *App) DownloadNovel(url string, savePath string, options map[string]inte
 	if err != nil {
 		return err
 	}
-
-	// 設定の取得
-	encoding := options["encoding"].(string)
-	lineEnding := options["lineEnding"].(string)
-	createHtml := boolOption(options, "createHtml", false)
-	defaults := defaultSettings()
-	createTxt := boolOption(options, "createTxt", defaults.CreateTxt)
-	createReadable := boolOption(options, "createReadable", defaults.CreateReadable)
-	createCombined := boolOption(options, "createCombined", false)
 
 	// 連載か短編かで処理を分岐
 	switch result.PageType {
@@ -158,28 +173,21 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 	}
 
 	totalChapters := len(result.Chapters)
-	runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話を取得しました。ダウンロードを開始します...", totalChapters))
-	runtime.EventsEmit(a.ctx, "progressText", fmt.Sprintf("0/%d話", totalChapters))
-
-	// HTMLファイル用のディレクトリ作成は無効化
-	// var htmlDir string
-	// if createHtml {
-	// 	htmlDir = filepath.Join(savePath, "html")
-	// 	if err := os.MkdirAll(htmlDir, 0755); err != nil {
-	// 		return fmt.Errorf("htmlディレクトリの作成に失敗しました: %w", err)
-	// 	}
-	// }
+	a.emitEvent("log", fmt.Sprintf("%d話を取得しました。ダウンロードを開始します...", totalChapters))
+	a.emitEvent("progressText", fmt.Sprintf("0/%d話", totalChapters))
 
 	// エピソード別コンテンツの取得
 	var allChapterContents []string
 	var allReadableChapterContents []string
 	novelCode := extractNovelCodeFromURL(result.Chapters[0].URL) // 最初のエピソードURLから小説番号を取得
 	var failedChapters int
+	var incompleteChapters int
+	var skippedChapters int
 	const maxFailures = 3
 
 	for i, chapter := range result.Chapters {
-		runtime.EventsEmit(a.ctx, "progress", int(float64(i)/float64(totalChapters)*80)) // 80%までエピソード取得用
-		runtime.EventsEmit(a.ctx, "progressText", fmt.Sprintf("%d/%d話", i, totalChapters))
+		a.emitEvent("progress", int(float64(i)/float64(totalChapters)*80)) // 80%までエピソード取得用
+		a.emitEvent("progressText", fmt.Sprintf("%d/%d話", i, totalChapters))
 
 		// ファイル名を先に生成してスキップチェック
 		episodeNumber := extractEpisodeNumberFromURL(chapter.URL)
@@ -191,17 +199,19 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 
 		// 既に保存済みかチェック
 		if a.shouldSkipEpisode(savePath, chapterFileName, episodeNumber, createHtml, createTxt, createReadable) {
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話: %s はすでに保存済みです。スキップします。", i+1, chapter.Title))
+			skippedChapters++
+			a.emitEvent("log", fmt.Sprintf("%d話: %s はすでに保存済みです。スキップします。", i+1, chapter.Title))
 			continue
 		}
 
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話: %s を取得中...", i+1, chapter.Title))
+		a.emitEvent("log", fmt.Sprintf("%d話: %s を取得中...", i+1, chapter.Title))
 
 		// Chapterの取得（リトライ機能付き）
-		content, rawHTML, fullPageHTML, err := a.ScrapeChapterWithHTML(chapter.URL)
+		content, mainHTML, err := a.scrapeChapterForFormats(chapter.URL, createTxt || createReadable, createHtml)
 		if err != nil {
 			failedChapters++
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の取得に失敗しました: %v （失敗回数: %d/%d）", i+1, err, failedChapters, maxFailures))
+			incompleteChapters++
+			a.emitEvent("log", fmt.Sprintf("%d話の取得に失敗しました: %v （失敗回数: %d/%d）", i+1, err, failedChapters, maxFailures))
 
 			// 失敗回数が上限に達した場合は全体を停止
 			if failedChapters >= maxFailures {
@@ -214,8 +224,6 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		failedChapters = 0
 
 		result.Chapters[i].Content = content
-		result.Chapters[i].RawHTML = rawHTML
-		result.Chapters[i].FullPageHTML = fullPageHTML
 
 		// 連結ファイル用に各話のフォーマットされたコンテンツを保存（タイトル・作者名なし）
 		if createTxt {
@@ -229,52 +237,53 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 
 		// 連載の場合、次のエピソードまで10秒間隔を開ける（最後のエピソード以外）
 		if i < len(result.Chapters)-1 {
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話取得完了。10秒待機中...", i+1))
+			a.emitEvent("log", fmt.Sprintf("%d話取得完了。10秒待機中...", i+1))
 			time.Sleep(10 * time.Second)
 		}
 
 		// ファイル保存（リトライ機能付き）
+		chapterSaveFailed := false
 		if createTxt {
 			// 各話のフォーマット（タイトル、作者名、話タイトル、本文）
 			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatAozora)
 			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding, textFormatAozora); err != nil {
-				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の保存に失敗しました: %v", i+1, err))
+				chapterSaveFailed = true
+				a.emitEvent("log", fmt.Sprintf("%d話の保存に失敗しました: %v", i+1, err))
 			}
 		}
 		if createReadable {
 			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatReadable)
 			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding, textFormatReadable); err != nil {
-				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の読書用TXT保存に失敗しました: %v", i+1, err))
+				chapterSaveFailed = true
+				a.emitEvent("log", fmt.Sprintf("%d話の読書用TXT保存に失敗しました: %v", i+1, err))
 			}
 		}
 
-		// HTMLファイル保存は無効化
-		// if createHtml {
-		// 	// 元ページ全体のHTMLからiframeを除去してから保存
-		// 	cleanHTML := a.removeIframes(fullPageHTML)
-		// 	episodeFilePath := filepath.Join(htmlDir, fmt.Sprintf("%s.html", episodeNumber))
-		// 	if err := os.WriteFile(episodeFilePath, []byte(cleanHTML), 0644); err != nil {
-		// 		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話のHTML保存に失敗しました: %v", i+1, err))
-		// 	}
-		// }
+		if createHtml {
+			if err := a.saveMainHTMLWithRetry(savePath, chapterFileName, mainHTML); err != nil {
+				chapterSaveFailed = true
+				a.emitEvent("log", fmt.Sprintf("%d話のHTML保存に失敗しました: %v", i+1, err))
+			}
+		}
+		if chapterSaveFailed {
+			incompleteChapters++
+		}
 	}
 
-	// インデックスページの作成は無効化
-	// if createHtml && len(result.Chapters) > 0 {
-	// 	runtime.EventsEmit(a.ctx, "progress", 85)
-	// 	runtime.EventsEmit(a.ctx, "progressText", "インデックスページ作成中")
-	// 	runtime.EventsEmit(a.ctx, "log", "インデックスページを作成中...")
-
-	// 	if err := a.saveOriginalIndexPages(savePath, result.IndexPagesHTML, result.Chapters); err != nil {
-	// 		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("インデックスページの作成に失敗しました: %v", err))
-	// 	}
-	// }
+	if incompleteChapters > 0 {
+		return fmt.Errorf("%d話の取得または保存に失敗しました。ログを確認して再実行してください", incompleteChapters)
+	}
+	if createCombined && skippedChapters > 0 && (createTxt || createReadable) {
+		// 保存済み話は今回の連結配列に含まれないため、部分的な本文で上書きしない。
+		createCombined = false
+		a.emitEvent("log", "保存済みでスキップした話があるため、連結TXTは作成・更新しません。各話ファイルは保存しました。")
+	}
 
 	// 連結ファイルの作成
 	if createCombined && len(allChapterContents) > 0 {
-		runtime.EventsEmit(a.ctx, "progress", 90)
-		runtime.EventsEmit(a.ctx, "progressText", "連結ファイル作成中")
-		runtime.EventsEmit(a.ctx, "log", "連結ファイルを作成中...")
+		a.emitEvent("progress", 90)
+		a.emitEvent("progressText", "連結ファイル作成中")
+		a.emitEvent("log", "連結ファイルを作成中...")
 
 		// 冒頭に小説タイトルと作者名を追加（ルビ変換済み）
 		var combinedBuilder strings.Builder
@@ -295,9 +304,9 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		}
 	}
 	if createCombined && len(allReadableChapterContents) > 0 {
-		runtime.EventsEmit(a.ctx, "progress", 90)
-		runtime.EventsEmit(a.ctx, "progressText", "読書用連結ファイル作成中")
-		runtime.EventsEmit(a.ctx, "log", "読書用連結ファイルを作成中...")
+		a.emitEvent("progress", 90)
+		a.emitEvent("progressText", "読書用連結ファイル作成中")
+		a.emitEvent("log", "読書用連結ファイルを作成中...")
 
 		var combinedBuilder strings.Builder
 		combinedBuilder.WriteString(a.formatInlineText(result.Title, textFormatReadable))
@@ -312,16 +321,16 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 	}
 
 	// 進捗状況を更新
-	runtime.EventsEmit(a.ctx, "progress", 100)
-	runtime.EventsEmit(a.ctx, "progressText", fmt.Sprintf("完了 (%d/%d話)", totalChapters, totalChapters))
-	runtime.EventsEmit(a.ctx, "log", "ダウンロードが完了しました")
+	a.emitEvent("progress", 100)
+	a.emitEvent("progressText", fmt.Sprintf("完了 (%d/%d話)", totalChapters, totalChapters))
+	a.emitEvent("log", "ダウンロードが完了しました")
 
 	return nil
 }
 
 // downloadShort は短編小説のダウンロード処理を行います
 func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, createTxt, createReadable bool, encoding, lineEnding string, originalURL string) error {
-	runtime.EventsEmit(a.ctx, "progressText", "短編小説処理中")
+	a.emitEvent("progressText", "短編小説処理中")
 
 	// 短編小説のファイル名生成（元のURLから小説番号を取得）
 	novelCode := extractNovelCodeFromURL(originalURL)
@@ -329,36 +338,23 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 
 	// 既に保存済みかチェック
 	if a.shouldSkipEpisode(savePath, fileName, "1", createHtml, createTxt, createReadable) {
-		runtime.EventsEmit(a.ctx, "log", "短編小説はすでに保存済みです。スキップします。")
-		runtime.EventsEmit(a.ctx, "progress", 100)
-		runtime.EventsEmit(a.ctx, "progressText", "完了（スキップ）")
+		a.emitEvent("log", "短編小説はすでに保存済みです。スキップします。")
+		a.emitEvent("progress", 100)
+		a.emitEvent("progressText", "完了（スキップ）")
 		return nil
 	}
 
-	// HTMLファイルの保存は無効化
-	// if createHtml {
-	// 	if result.FullPageHTML != "" {
-	// 		// 元ページ全体のHTMLからiframeを除去してから保存
-	// 		cleanHTML := a.removeIframes(result.FullPageHTML)
-	// 		htmlFilePath := filepath.Join(savePath, fileName+".html")
-	// 		if err := os.WriteFile(htmlFilePath, []byte(cleanHTML), 0644); err != nil {
-	// 			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("HTMLファイルの保存に失敗しました: %v", err))
-	// 			return fmt.Errorf("HTMLファイルの保存に失敗しました: %w", err)
-	// 		}
-	// 	} else {
-	// 		// フォールバック：元のHTML生成方法（テキストコンテンツを使用）
-	// 		htmlContent := a.generateShortNovelHTML(result.Title, strings.Join(result.TextContent, "\n"))
-	// 		if err := a.saveHtmlFile(savePath, []string{htmlContent}, fileName); err != nil {
-	// 			return err
-	// 		}
-	// 	}
-	// }
+	if createHtml {
+		if err := a.saveMainHTMLWithRetry(savePath, fileName, result.MainHTML); err != nil {
+			return err
+		}
+	}
 
 	// テキストファイルの保存
 	if createTxt {
 		content := strings.Join(result.TextContent, "\n")
 		if content == "" {
-			runtime.EventsEmit(a.ctx, "log", "本文を取得できませんでした")
+			a.emitEvent("log", "本文を取得できませんでした")
 			return fmt.Errorf("本文を取得できませんでした")
 		}
 
@@ -371,7 +367,7 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 	if createReadable {
 		content := strings.Join(result.TextContent, "\n")
 		if content == "" {
-			runtime.EventsEmit(a.ctx, "log", "本文を取得できませんでした")
+			a.emitEvent("log", "本文を取得できませんでした")
 			return fmt.Errorf("本文を取得できませんでした")
 		}
 
@@ -382,9 +378,9 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 	}
 
 	// 進捗状況を更新
-	runtime.EventsEmit(a.ctx, "progress", 100)
-	runtime.EventsEmit(a.ctx, "progressText", "完了")
-	runtime.EventsEmit(a.ctx, "log", "ファイルの保存が完了しました")
+	a.emitEvent("progress", 100)
+	a.emitEvent("progressText", "完了")
+	a.emitEvent("log", "ファイルの保存が完了しました")
 
 	return nil
 }
@@ -395,7 +391,7 @@ func (a *App) saveHtmlFile(savePath string, rawHTML []string, fileName string) e
 	filePath := filepath.Join(savePath, sanitizeFileName(fileName)+".html")
 	err := os.WriteFile(filePath, []byte(htmlContent), 0644)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("HTMLファイルの保存に失敗しました: %v", err))
+		a.emitEvent("log", fmt.Sprintf("HTMLファイルの保存に失敗しました: %v", err))
 		return fmt.Errorf("HTMLファイルの保存に失敗しました: %w", err)
 	}
 	return nil
@@ -426,7 +422,7 @@ func (a *App) saveTextFile(savePath, title, content, encoding, lineEnding string
 		encoder := japanese.ShiftJIS.NewEncoder()
 		txtData, _, err = transform.Bytes(encoder, []byte(content))
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("Shift-JISエンコードエラー: %v", err))
+			a.emitEvent("log", fmt.Sprintf("Shift-JISエンコードエラー: %v", err))
 			return fmt.Errorf("Shift-JISエンコードエラー: %w", err)
 		}
 	}
@@ -435,7 +431,7 @@ func (a *App) saveTextFile(savePath, title, content, encoding, lineEnding string
 	baseFileName := filepath.Join(savePath, title)
 	err = os.WriteFile(baseFileName+".txt", txtData, 0644)
 	if err != nil {
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("TXTファイルの保存に失敗しました: %v", err))
+		a.emitEvent("log", fmt.Sprintf("TXTファイルの保存に失敗しました: %v", err))
 		return fmt.Errorf("TXTファイルの保存に失敗しました: %w", err)
 	}
 
@@ -456,7 +452,7 @@ func (a *App) saveTextFileWithRetry(savePath, title, content, encoding, lineEndi
 
 	for retry := 0; retry < maxRetries; retry++ {
 		if retry > 0 {
-			runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("ファイル保存をリトライします（%d/%d回目）: %s", retry+1, maxRetries, title))
+			a.emitEvent("log", fmt.Sprintf("ファイル保存をリトライします（%d/%d回目）: %s", retry+1, maxRetries, title))
 			// リトライ前に少し待機
 			time.Sleep(2 * time.Second)
 		}
@@ -464,13 +460,13 @@ func (a *App) saveTextFileWithRetry(savePath, title, content, encoding, lineEndi
 		err := a.saveTextFile(savePath, title, content, encoding, lineEnding)
 		if err == nil {
 			if retry > 0 {
-				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("ファイル保存に成功しました（%d回目で成功）: %s", retry+1, title))
+				a.emitEvent("log", fmt.Sprintf("ファイル保存に成功しました（%d回目で成功）: %s", retry+1, title))
 			}
 			return nil
 		}
 
 		lastErr = err
-		runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("ファイル保存に失敗しました（%d/%d回目）: %s - エラー: %v", retry+1, maxRetries, title, err))
+		a.emitEvent("log", fmt.Sprintf("ファイル保存に失敗しました（%d/%d回目）: %s - エラー: %v", retry+1, maxRetries, title, err))
 	}
 
 	return fmt.Errorf("ファイル保存に%d回失敗しました: %s - 最後のエラー: %w", maxRetries, title, lastErr)
@@ -768,10 +764,10 @@ func (a *App) preserveLegacyAozoraText(savePath, baseName string) error {
 func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, createHtml, createTxt, createReadable bool) (bool, bool, bool) {
 	var htmlExists, txtExists, readableExists bool
 
-	// HTMLファイルの存在チェック（エピソード番号のみをファイル名に使用）
+	// HTMLは連載・短編ともTXTと同じベース名で保存する。
 	if createHtml {
-		htmlPath := filepath.Join(savePath, "html", episodeNumber+".html")
-		if _, err := os.Stat(htmlPath); err == nil {
+		htmlPath := filepath.Join(savePath, sanitizeFileName(fileName)+".html")
+		if info, err := os.Stat(htmlPath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
 			htmlExists = true
 		}
 	} else {
@@ -814,7 +810,7 @@ func (a *App) GetTitle(url string) (string, error) {
 	// 各話URLの場合は小説インデックスURLに変換
 	processedURL := a.convertToIndexURL(url)
 
-	result := a.StartScraping(processedURL)
+	result := a.startScraping(processedURL, false, false)
 	if result.Error != "" {
 		return "", fmt.Errorf(result.Error)
 	}

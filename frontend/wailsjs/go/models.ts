@@ -31,6 +31,7 @@ export namespace main {
 	    raw_html: string[];
 	    text_content: string[];
 	    full_page_html: string;
+	    main_html: string;
 	    index_pages_html: string[];
 	    chapters?: ChapterInfo[];
 	    error?: string;
@@ -47,6 +48,7 @@ export namespace main {
 	        this.raw_html = source["raw_html"];
 	        this.text_content = source["text_content"];
 	        this.full_page_html = source["full_page_html"];
+	        this.main_html = source["main_html"];
 	        this.index_pages_html = source["index_pages_html"];
 	        this.chapters = this.convertValues(source["chapters"], ChapterInfo);
 	        this.error = source["error"];

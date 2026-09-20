@@ -7,6 +7,7 @@ toolchain go1.23.5
 require (
 	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/wailsapp/wails/v2 v2.10.1
+	golang.org/x/net v0.39.0
 	golang.org/x/text v0.24.0
 )
 
@@ -35,7 +36,6 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.19 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 )
 

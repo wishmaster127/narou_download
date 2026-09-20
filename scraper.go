@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -18,6 +20,7 @@ type ScrapeResult struct {
 	RawHTML        []string      `json:"raw_html"`
 	TextContent    []string      `json:"text_content"`
 	FullPageHTML   string        `json:"full_page_html"`
+	MainHTML       string        `json:"main_html"`
 	IndexPagesHTML []string      `json:"index_pages_html"`
 	Chapters       []ChapterInfo `json:"chapters,omitempty"`
 	Error          string        `json:"error,omitempty"`
@@ -35,50 +38,13 @@ type ChapterInfo struct {
 
 // StartScraping はWailsのバインディングとして公開される関数です
 func (a *App) StartScraping(url string) ScrapeResult {
+	return a.startScraping(url, true, false)
+}
+
+// startScraping は選択した形式に必要な本文を取得します。
+func (a *App) startScraping(url string, needText, needHTML bool) ScrapeResult {
 	result := ScrapeResult{}
-
-	// HTTPクライアントの設定
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:       100,
-			IdleConnTimeout:    90 * time.Second,
-			DisableCompression: true,
-		},
-	}
-
-	// リクエストの作成
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Printf("リクエスト作成エラー: %v\n", err)
-		result.Error = err.Error()
-		return result
-	}
-
-	// ヘッダーの設定
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
-
-	// ノクターンノベルズの年齢確認用Cookie
-	if strings.Contains(url, "novel18.syosetu.com") {
-		req.Header.Set("Cookie", "over18=yes")
-	}
-
-	// ノクターンノベルズの年齢確認用Cookie
-	if strings.Contains(url, "novel18.syosetu.com") {
-		req.Header.Set("Cookie", "over18=yes")
-	}
-
-	// HTTPリクエストの実行
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("リクエストエラー: %v\n", err)
-		result.Error = err.Error()
-		return result
-	}
-	defer resp.Body.Close()
-
-	// HTMLの解析
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, source, err := a.fetchPageSource(url)
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -117,15 +83,23 @@ func (a *App) StartScraping(url string) ScrapeResult {
 			return result
 		}
 	case "short":
-		// 短編の場合、本文を直接取得
-		content, err := a.extractContent(doc)
-		if err != nil {
-			result.Error = err.Error()
-			return result
+		if needText {
+			content, err := a.extractContent(doc)
+			if err != nil {
+				result.Error = err.Error()
+				return result
+			}
+			result.TextContent = append(result.TextContent, content)
 		}
 
-		// テキストコンテンツを保存（TXTファイル用）
-		result.TextContent = append(result.TextContent, content)
+		if needHTML {
+			mainHTML, err := extractMainHTML(source)
+			if err != nil {
+				result.Error = err.Error()
+				return result
+			}
+			result.MainHTML = string(mainHTML)
+		}
 
 		// HTML構造も取得（HTMLファイル用）
 		rawHTML, err := a.extractRawHTML(doc)
@@ -244,6 +218,12 @@ func (a *App) scrapeChapterList(result *ScrapeResult, doc *goquery.Document, bas
 
 // fetchPage はURLからHTMLドキュメントを取得します
 func (a *App) fetchPage(url string) (*goquery.Document, error) {
+	doc, _, err := a.fetchPageSource(url)
+	return doc, err
+}
+
+// fetchPageSource は解析用DOMと、再出力していない受信データを返します。
+func (a *App) fetchPageSource(url string) (*goquery.Document, []byte, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -255,7 +235,7 @@ func (a *App) fetchPage(url string) (*goquery.Document, error) {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
@@ -267,16 +247,64 @@ func (a *App) fetchPage(url string) (*goquery.Document, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, fmt.Errorf("ページ取得エラー: HTTP %d (%s)", resp.StatusCode, url)
+	}
+	source, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(source))
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return doc, nil
+	return doc, source, nil
+}
+
+// scrapeChapterForFormats はHTMLをTXT変換から独立して取得します。
+func (a *App) scrapeChapterForFormats(chapterURL string, needText, needHTML bool) (string, string, error) {
+	const maxRetries = 3
+	var lastErr error
+	for retry := 0; retry < maxRetries; retry++ {
+		if retry > 0 {
+			log.Printf("各話の取得を再試行します（%d/%d回目）: %s", retry+1, maxRetries, chapterURL)
+			time.Sleep(time.Duration(retry) * time.Second)
+		}
+		content, mainHTML, err := a.scrapeChapterForFormatsOnce(chapterURL, needText, needHTML)
+		if err == nil {
+			return content, mainHTML, nil
+		}
+		lastErr = err
+		log.Printf("各話の取得に失敗しました（%d/%d回目）: %s - %v", retry+1, maxRetries, chapterURL, err)
+	}
+	return "", "", fmt.Errorf("各話の取得に%d回失敗しました: %s - %w", maxRetries, chapterURL, lastErr)
+}
+
+func (a *App) scrapeChapterForFormatsOnce(chapterURL string, needText, needHTML bool) (string, string, error) {
+	doc, source, err := a.fetchPageSource(chapterURL)
+	if err != nil {
+		return "", "", err
+	}
+	var content, mainHTML string
+	if needText {
+		content, err = a.extractContent(doc)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if needHTML {
+		mainBytes, err := extractMainHTML(source)
+		if err != nil {
+			return "", "", err
+		}
+		mainHTML = string(mainBytes)
+	}
+	return content, mainHTML, nil
 }
 
 // extractContent はHTMLドキュメントから本文を抽出します

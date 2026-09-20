@@ -50,7 +50,7 @@ export default function NarouDownload() {
         setSavePath(settings.savePath || '')
         setEncoding(settings.encoding || 'UTF-8')
         setLineEnding(settings.lineEnding || 'CR+LF')
-        setCreateHtml(false)
+        setCreateHtml(settings.createHtml ?? false)
         setCreateTxt(settings.createTxt ?? false)
         setCreateReadable(settings.createReadable ?? true)
         setCreateCombined(settings.createCombined ?? false)
@@ -119,7 +119,7 @@ export default function NarouDownload() {
       const options = {
         encoding,
         lineEnding,
-        createHtml: false,
+        createHtml,
         createTxt,
         createReadable,
         createCombined,
@@ -129,7 +129,7 @@ export default function NarouDownload() {
       setProgressText('完了')
     } catch (error) {
       console.error('ダウンロード中にエラーが発生しました:', error)
-      setLog(prev => prev + '\nエラー: ダウンロードに失敗しました - ' + error.message)
+      setLog(prev => prev + '\nエラー: ダウンロードに失敗しました - ' + (error?.message ?? String(error)))
       setProgress(0)
       setProgressText('エラー')
       setTitle('')
@@ -198,7 +198,7 @@ export default function NarouDownload() {
           savePath,
           encoding,
           lineEnding,
-          createHtml: false,
+          createHtml,
           createTxt,
           createReadable,
           createCombined,
@@ -282,11 +282,11 @@ export default function NarouDownload() {
 
           <Grid.Col span={10} offset={2}>
             <Group>
-              {/* <Checkbox 
+              <Checkbox
                 checked={createHtml}
                 onChange={(event) => setCreateHtml(event.currentTarget.checked)}
-                label="HTML" 
-              /> */}
+                label="HTML（main原文）"
+              />
               <Checkbox
                 checked={createReadable}
                 onChange={(event) => setCreateReadable(event.currentTarget.checked)}
@@ -298,18 +298,23 @@ export default function NarouDownload() {
                 label="青空文庫TXT"
               />
               <Select
+                aria-label="TXTの文字コード"
                 value={encoding}
                 onChange={setEncoding}
                 data={['UTF-8', 'UTF-16LE', 'Shift-JIS']}
                 style={{ flex: 1 }}
               />
               <Select
+                aria-label="TXTの改行コード"
                 value={lineEnding}
                 onChange={setLineEnding}
                 data={['CR+LF', 'LF', 'CR']}
                 style={{ flex: 1 }}
               />
             </Group>
+            <Text size="xs" c="dimmed" mt="xs">
+              HTMLはmain部分をそのまま保存します。文字コード・改行・連結の設定はTXT用です。CSS・画像の保存やリンクの書き換えは行いません。
+            </Text>
           </Grid.Col>
         </Grid>
 
