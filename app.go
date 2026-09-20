@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
 
@@ -44,9 +46,18 @@ const (
 	textFormatReadable textFormat = "readable"
 )
 
+func defaultSettings() Settings {
+	return Settings{
+		Encoding:       "UTF-8",
+		LineEnding:     "CR+LF",
+		CreateTxt:      false,
+		CreateReadable: true,
+	}
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{settings: defaultSettings()}
 }
 
 // startup is called when the app starts. The context is saved
@@ -110,8 +121,9 @@ func (a *App) DownloadNovel(url string, savePath string, options map[string]inte
 	encoding := options["encoding"].(string)
 	lineEnding := options["lineEnding"].(string)
 	createHtml := boolOption(options, "createHtml", false)
-	createTxt := boolOption(options, "createTxt", true)
-	createReadable := boolOption(options, "createReadable", false)
+	defaults := defaultSettings()
+	createTxt := boolOption(options, "createTxt", defaults.CreateTxt)
+	createReadable := boolOption(options, "createReadable", defaults.CreateReadable)
 	createCombined := boolOption(options, "createCombined", false)
 
 	// 連載か短編かで処理を分岐
@@ -225,13 +237,13 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		if createTxt {
 			// 各話のフォーマット（タイトル、作者名、話タイトル、本文）
 			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatAozora)
-			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding); err != nil {
+			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding, textFormatAozora); err != nil {
 				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の保存に失敗しました: %v", i+1, err))
 			}
 		}
 		if createReadable {
 			formattedContent := a.formatChapterContent(result.Title, result.Author, chapter.Title, content, textFormatReadable)
-			if err := a.saveTextFileWithRetry(savePath, chapterFileName+"-readable", formattedContent, encoding, lineEnding); err != nil {
+			if err := a.saveTextFileWithRetry(savePath, chapterFileName, formattedContent, encoding, lineEnding, textFormatReadable); err != nil {
 				runtime.EventsEmit(a.ctx, "log", fmt.Sprintf("%d話の読書用TXT保存に失敗しました: %v", i+1, err))
 			}
 		}
@@ -277,7 +289,7 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		combinedContent := combinedBuilder.String()
 
 		if createTxt {
-			if err := a.saveTextFileWithRetry(savePath, "all", combinedContent, encoding, lineEnding); err != nil {
+			if err := a.saveTextFileWithRetry(savePath, "all", combinedContent, encoding, lineEnding, textFormatAozora); err != nil {
 				return fmt.Errorf("連結TXTファイルの保存に失敗しました: %w", err)
 			}
 		}
@@ -294,7 +306,7 @@ func (a *App) downloadRensai(savePath string, result ScrapeResult, createHtml, c
 		combinedBuilder.WriteString("\n\n\n")
 		combinedBuilder.WriteString(strings.Join(allReadableChapterContents, "\n\n----------------\n\n\n"))
 
-		if err := a.saveTextFileWithRetry(savePath, "all-readable", combinedBuilder.String(), encoding, lineEnding); err != nil {
+		if err := a.saveTextFileWithRetry(savePath, "all", combinedBuilder.String(), encoding, lineEnding, textFormatReadable); err != nil {
 			return fmt.Errorf("読書用連結TXTファイルの保存に失敗しました: %w", err)
 		}
 	}
@@ -352,7 +364,7 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 
 		// 短編小説のフォーマット（タイトル、作者名、話タイトルなし、本文）
 		formattedContent := a.formatChapterContent(result.Title, result.Author, "", content, textFormatAozora)
-		if err := a.saveTextFileWithRetry(savePath, fileName, formattedContent, encoding, lineEnding); err != nil {
+		if err := a.saveTextFileWithRetry(savePath, fileName, formattedContent, encoding, lineEnding, textFormatAozora); err != nil {
 			return err
 		}
 	}
@@ -364,7 +376,7 @@ func (a *App) downloadShort(savePath string, result ScrapeResult, createHtml, cr
 		}
 
 		formattedContent := a.formatChapterContent(result.Title, result.Author, "", content, textFormatReadable)
-		if err := a.saveTextFileWithRetry(savePath, fileName+"-readable", formattedContent, encoding, lineEnding); err != nil {
+		if err := a.saveTextFileWithRetry(savePath, fileName, formattedContent, encoding, lineEnding, textFormatReadable); err != nil {
 			return err
 		}
 	}
@@ -431,7 +443,14 @@ func (a *App) saveTextFile(savePath, title, content, encoding, lineEnding string
 }
 
 // saveTextFileWithRetry はテキストファイルの保存をリトライ機能付きで実行します
-func (a *App) saveTextFileWithRetry(savePath, title, content, encoding, lineEnding string) error {
+func (a *App) saveTextFileWithRetry(savePath, title, content, encoding, lineEnding string, format textFormat) error {
+	if format == textFormatReadable {
+		if err := a.preserveLegacyAozoraText(savePath, title); err != nil {
+			return err
+		}
+	}
+	title = textFileName(title, format)
+
 	const maxRetries = 3
 	var lastErr error
 
@@ -525,7 +544,8 @@ func (a *App) SaveSettings(settings Settings) error {
 
 // LoadSettings はJSONファイルから設定を読み込みます
 func (a *App) LoadSettings() (Settings, error) {
-	var settings Settings
+	// 未保存の項目にはデフォルト値を使い、保存済みの選択は維持する。
+	settings := defaultSettings()
 
 	// 実行ファイルと同じディレクトリから設定ファイルを読み込み
 	exePath, err := os.Executable()
@@ -538,13 +558,7 @@ func (a *App) LoadSettings() (Settings, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// 設定ファイルが存在しない場合はデフォルト値を返す
-			return Settings{
-				Encoding:       "UTF-8",
-				LineEnding:     "CR+LF",
-				CreateHtml:     false,
-				CreateTxt:      true,
-				CreateReadable: false,
-			}, nil
+			return settings, nil
 		}
 		return settings, fmt.Errorf("設定の読み込みに失敗しました: %w", err)
 	}
@@ -669,6 +683,87 @@ func generateFileName(novelCode, episodeNumber string) string {
 	return fmt.Sprintf("%s-%s", novelCode, episodeNumber)
 }
 
+// textFileName は拡張子を除いた保存名を形式ごとに生成します。
+func textFileName(baseName string, format textFormat) string {
+	if format == textFormatAozora {
+		return "aozora-" + baseName
+	}
+	return baseName
+}
+
+// hasAozoraNotation は読書用TXTへの変換が必要なルビ・注記を検出します。
+// 旧ファイルの文字コードは保存されていないため、対応する3形式で確認します。
+func (a *App) hasAozoraNotation(data []byte) bool {
+	text := string(data)
+	if a.convertAozoraToReadableText(text) != text {
+		return true
+	}
+	for _, decoder := range []transform.Transformer{
+		unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewDecoder(),
+		japanese.ShiftJIS.NewDecoder(),
+	} {
+		decoded, _, err := transform.Bytes(decoder, data)
+		if err == nil {
+			text = string(decoded)
+			if a.convertAozoraToReadableText(text) != text {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// preserveLegacyAozoraText は通常名で保存されていた旧青空文庫TXTを退避します。
+// 既存の退避先が別内容なら別名を使い、文字コードを含め元のバイト列を保持します。
+func (a *App) preserveLegacyAozoraText(savePath, baseName string) error {
+	oldPath := filepath.Join(savePath, baseName+".txt")
+	data, err := os.ReadFile(oldPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("既存TXTの確認に失敗しました: %w", err)
+	}
+	if !a.hasAozoraNotation(data) {
+		return nil
+	}
+
+	for attempt := 0; ; attempt++ {
+		backupName := textFileName(baseName, textFormatAozora)
+		if attempt == 1 {
+			backupName += "-previous"
+		} else if attempt > 1 {
+			backupName += fmt.Sprintf("-previous-%d", attempt)
+		}
+		backupPath := filepath.Join(savePath, backupName+".txt")
+		backup, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(err) {
+			existing, readErr := os.ReadFile(backupPath)
+			if readErr != nil {
+				return fmt.Errorf("旧青空文庫TXTの退避先を確認できませんでした: %w", readErr)
+			}
+			if bytes.Equal(existing, data) {
+				return nil
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("旧青空文庫TXTを退避できませんでした: %w", err)
+		}
+		_, writeErr := backup.Write(data)
+		closeErr := backup.Close()
+		if writeErr != nil {
+			os.Remove(backupPath)
+			return fmt.Errorf("旧青空文庫TXTの退避に失敗しました: %w", writeErr)
+		}
+		if closeErr != nil {
+			os.Remove(backupPath)
+			return fmt.Errorf("旧青空文庫TXTの退避に失敗しました: %w", closeErr)
+		}
+		return nil
+	}
+}
+
 // isFileAlreadySaved は指定されたファイルが既に保存されているかチェックします
 func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, createHtml, createTxt, createReadable bool) (bool, bool, bool) {
 	var htmlExists, txtExists, readableExists bool
@@ -683,9 +778,9 @@ func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, creat
 		htmlExists = true // HTMLを作成しない場合は常にtrue
 	}
 
-	// TXTファイルの存在チェック（従来通り小説番号-エピソード番号）
+	// 青空文庫TXTの存在チェック
 	if createTxt {
-		txtPath := filepath.Join(savePath, fileName+".txt")
+		txtPath := filepath.Join(savePath, textFileName(fileName, textFormatAozora)+".txt")
 		if _, err := os.Stat(txtPath); err == nil {
 			txtExists = true
 		}
@@ -694,9 +789,10 @@ func (a *App) isFileAlreadySaved(savePath, fileName, episodeNumber string, creat
 	}
 
 	if createReadable {
-		readablePath := filepath.Join(savePath, fileName+"-readable.txt")
-		if _, err := os.Stat(readablePath); err == nil {
-			readableExists = true
+		readablePath := filepath.Join(savePath, textFileName(fileName, textFormatReadable)+".txt")
+		if data, err := os.ReadFile(readablePath); err == nil {
+			// 旧版の通常名は青空文庫TXTなので、存在だけで保存済みとしない。
+			readableExists = !a.hasAozoraNotation(data)
 		}
 	} else {
 		readableExists = true // 読書用TXTを作成しない場合は常にtrue

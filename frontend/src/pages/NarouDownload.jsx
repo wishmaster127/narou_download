@@ -33,12 +33,13 @@ export default function NarouDownload() {
   const [url, setUrl] = useState('')
   const [showInFront, setShowInFront] = useState(false)
   const [createHtml, setCreateHtml] = useState(false)
-  const [createTxt, setCreateTxt] = useState(true)
-  const [createReadable, setCreateReadable] = useState(false)
+  const [createTxt, setCreateTxt] = useState(false)
+  const [createReadable, setCreateReadable] = useState(true)
   const [createCombined, setCreateCombined] = useState(false)
   const [title, setTitle] = useState('')
   const [progressText, setProgressText] = useState('')
   const [isDownloading, setIsDownloading] = useState(false)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   // 設定の読み込み
   useEffect(() => {
@@ -50,12 +51,14 @@ export default function NarouDownload() {
         setEncoding(settings.encoding || 'UTF-8')
         setLineEnding(settings.lineEnding || 'CR+LF')
         setCreateHtml(false)
-        setCreateTxt(settings.createTxt ?? true)
-        setCreateReadable(settings.createReadable ?? false)
+        setCreateTxt(settings.createTxt ?? false)
+        setCreateReadable(settings.createReadable ?? true)
         setCreateCombined(settings.createCombined ?? false)
         setShowInFront(settings.showInFront ?? false)
       } catch (error) {
         console.error('設定の読み込み中にエラーが発生しました:', error)
+      } finally {
+        setSettingsLoaded(true)
       }
     }
     loadSettings()
@@ -186,6 +189,8 @@ export default function NarouDownload() {
   }
 
   useEffect(() => {
+    if (!settingsLoaded) return
+
     const syncSettings = async () => {
       try {
         const settings = {
@@ -206,7 +211,7 @@ export default function NarouDownload() {
     }
   
     syncSettings()
-  }, [url, savePath, encoding, lineEnding, createHtml, createTxt, createReadable, createCombined, showInFront])
+  }, [settingsLoaded, url, savePath, encoding, lineEnding, createHtml, createTxt, createReadable, createCombined, showInFront])
 
   // ログが更新されたときに自動スクロール
   useEffect(() => {
@@ -283,14 +288,14 @@ export default function NarouDownload() {
                 label="HTML" 
               /> */}
               <Checkbox
+                checked={createReadable}
+                onChange={(event) => setCreateReadable(event.currentTarget.checked)}
+                label="読書用TXT（標準）"
+              />
+              <Checkbox
                 checked={createTxt}
                 onChange={(event) => setCreateTxt(event.currentTarget.checked)}
                 label="青空文庫TXT"
-              />
-              <Checkbox
-                checked={createReadable}
-                onChange={(event) => setCreateReadable(event.currentTarget.checked)}
-                label="読書用TXT"
               />
               <Select
                 value={encoding}
@@ -338,7 +343,7 @@ export default function NarouDownload() {
             />
           </Stack>
 
-          <Button ml={50} onClick={handleDownload} disabled={isDownloading || !url}>
+          <Button ml={50} onClick={handleDownload} disabled={isDownloading || !settingsLoaded || !url}>
             {isDownloading ? 'ダウンロード中...' : 'ダウンロード'}
           </Button>
           <Button variant="default" onClick={handleExit}>終了</Button>
